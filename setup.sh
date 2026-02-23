@@ -1,19 +1,27 @@
 COMPOSE_FILE="compose.yaml"
-TARGET_LINE_GROUP_ADD="#group_add:"
-TARGET_LINE_VOLUME="- /var/run/docker.sock:/var/run/docker.sock"
 
 curl -O https://raw.githubusercontent.com/coder/coder/refs/heads/main/${COMPOSE_FILE}
 
-GROUP_ADD_INDENTATION=$(grep -oP "^\s*(?=${TARGET_LINE_GROUP_ADD})" ${COMPOSE_FILE} | head -1)
-DOCKER_GID=$(getent group docker | cut -d: -f3)
+echo "→ Removing Docker-specific config"
+sed -i '/\/var\/run\/docker.sock/d' ${COMPOSE_FILE}
+sed -i '/#group_add:/,/docker group on host/d' ${COMPOSE_FILE}
 
-REPLACEMENT_BLOCK="\
-${GROUP_ADD_INDENTATION}group_add:\n\
-${GROUP_ADD_INDENTATION}  - \"${DOCKER_GID}\" # docker group on host"
+PODMAN_SOCKET="/run/user/$(id -u)/podman/podman.sock"
 
-sed -i "/${TARGET_LINE_GROUP_ADD}/,/998\" # docker group on host/c\\${REPLACEMENT_BLOCK}" ${COMPOSE_FILE}
+if [ -S "$PODMAN_SOCKET" ]; then
+    echo "→ Injecting Podman socket with correct indentation"
 
-VOLUME_INDENTATION=$(grep -oP "^\s*(?=${TARGET_LINE_VOLUME})" ${COMPOSE_FILE} | head -1)
-NEW_VOLUMES="${VOLUME_INDENTATION}- /run/sysbox:/run/sysbox\\
-${VOLUME_INDENTATION}- /var/lib/sysbox:/var/lib/sysbox"
-sed -i "\#${TARGET_LINE_VOLUME}#a\\${NEW_VOLUMES}" ${COMPOSE_FILE}
+    awk -v sock="$PODMAN_SOCKET:/var/run/docker.sock" '
+    /coder_home:\/home\/coder/ {
+        match($0, /^[[:space:]]*/)
+        indent = substr($0, RSTART, RLENGTH)
+        print indent "- " sock
+    }
+    { print }
+    ' ${COMPOSE_FILE} > ${COMPOSE_FILE}.tmp && mv ${COMPOSE_FILE}.tmp ${COMPOSE_FILE}
+else
+    echo "⚠ Podman socket not found"
+    echo "Run: systemctl --user start podman.socket"
+fi
+
+echo "✓ Podman-compatible compose generated"
